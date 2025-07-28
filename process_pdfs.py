@@ -76,7 +76,7 @@ def extract_text_details(pdf_path):
                         "spans": line_spans_details,
                         "is_centered": abs(min_x0 + max_x1 - page_width) / page_width < 0.25,
                         "spacing_above": spacing_above,
-                        "block_density": len(block["lines"])
+                        "block_density": len(block["lines"])  # Indicates if part of dense text block
                     })
             document_lines.extend(current_page_lines)
         doc.close()
@@ -90,33 +90,26 @@ def is_bold(flags):
     return (flags & 4) != 0
 
 def is_heading_numbered(text):
-    """Checks if text starts with a numbering pattern (e.g., '1.', '1.1', '1.1.1')."""
+    """Checks if text starts with a numbering pattern (e.g., '1.', '1.1')."""
     return bool(re.match(r'^\d+(\.\d+)*(\.\s|\s|$)', text))
-
-def get_numbering_depth(text):
-    """Returns the depth of a numbered heading (e.g., '1.' -> 1, '1.1' -> 2, '1.1.1' -> 3)."""
-    match = re.match(r'^\d+(\.\d+)*', text)
-    if match:
-        return len(match.group(0).split('.')) if '.' in match.group(0) else 1
-    return 0
 
 def compute_heading_score(line, heading_size_map, body_text_size):
     """Computes a score to determine if a line is a heading."""
     avg_size = sum(span["size"] for span in line["spans"]) / len(line["spans"]) if line["spans"] else 0
     is_any_bold = any(is_bold(span["flags"]) for span in line["spans"])
-    numbering_depth = get_numbering_depth(line["text"])
+    is_numbered = is_heading_numbered(line["text"])
     is_short = len(line["text"]) < 80
     is_centered = line["is_centered"]
     spacing_above = line["spacing_above"] if line["spacing_above"] > 0 else 0
-    is_sparse = line["block_density"] <= 3
+    is_sparse = line["block_density"] <= 3  # Headings often in small blocks
 
     score = 0
     if avg_size > body_text_size * 1.2:
         score += 40
     if is_any_bold:
         score += 25
-    if numbering_depth > 0:
-        score += 25 + (numbering_depth - 1) * 10  # Bonus for deeper numbering
+    if is_numbered:
+        score += 25
     if is_short:
         score += 20
     if is_centered:
@@ -136,78 +129,9 @@ def compute_heading_score(line, heading_size_map, body_text_size):
 
     return score
 
-def group_multiline_headings(lines, heading_size_map, body_text_size):
-    """Groups consecutive lines into a single heading based on proximity and properties."""
-    grouped_lines = []
-    current_group = []
-    prev_line = None
-
-    for line in lines:
-        avg_size = sum(span["size"] for span in line["spans"]) / len(line["spans"]) if line["spans"] else 0
-        score = compute_heading_score(line, heading_size_map, body_text_size)
-
-        if prev_line and score >= 80:
-            prev_avg_size = sum(span["size"] for span in prev_line["spans"]) / len(prev_line["spans"])
-            y_gap = line["bbox"][1] - prev_line["bbox"][3]
-            same_style = abs(avg_size - prev_avg_size) < 1.0 and line["is_centered"] == prev_line["is_centered"]
-            is_close = y_gap < avg_size * 1.5
-
-            if same_style and is_close and prev_line in current_group:
-                current_group.append(line)
-                prev_line = line
-                continue
-
-        if current_group:
-            # Combine group into a single line
-            combined_text = " ".join(l["text"] for l in current_group)
-            first_line = current_group[0]
-            combined_line = {
-                "text": combined_text,
-                "page": first_line["page"],
-                "bbox": (
-                    min(l["bbox"][0] for l in current_group),
-                    first_line["bbox"][1],
-                    max(l["bbox"][2] for l in current_group),
-                    current_group[-1]["bbox"][3]
-                ),
-                "spans": [span for l in current_group for span in l["spans"]],
-                "is_centered": first_line["is_centered"],
-                "spacing_above": first_line["spacing_above"],
-                "block_density": first_line["block_density"]
-            }
-            grouped_lines.append(combined_line)
-            current_group = []
-
-        if score >= 80:
-            current_group = [line]
-        else:
-            grouped_lines.append(line)
-        prev_line = line
-
-    if current_group:
-        combined_text = " ".join(l["text"] for l in current_group)
-        first_line = current_group[0]
-        combined_line = {
-            "text": combined_text,
-            "page": first_line["page"],
-            "bbox": (
-                min(l["bbox"][0] for l in current_group),
-                first_line["bbox"][1],
-                max(l["bbox"][2] for l in current_group),
-                current_group[-1]["bbox"][3]
-            ),
-            "spans": [span for l in current_group for span in l["spans"]],
-            "is_centered": first_line["is_centered"],
-            "spacing_above": first_line["spacing_above"],
-            "block_density": first_line["block_density"]
-        }
-        grouped_lines.append(combined_line)
-
-    return grouped_lines
-
 def identify_headings(lines, pdf_path):
     """
-    Identifies title, H1, H2, and H3 headings with improved multiline and numbered heading handling.
+    Identifies title, H1, H2, and H3 headings using refined heuristics.
     """
     if not lines:
         return {"title": "No Title Found", "outline": []}
@@ -228,10 +152,10 @@ def identify_headings(lines, pdf_path):
     if not all_font_sizes:
         return {"title": title, "outline": []}
 
-    body_text_size = median(all_font_sizes)
+    body_text_size = median(all_font_sizes)  # Use median for robustness
     size_counts = Counter([round(s, 1) for s in all_font_sizes]).most_common()
     if size_counts:
-        body_text_size = max(body_text_size, size_counts[0][0])
+        body_text_size = max(body_text_size, size_counts[0][0])  # Prefer most common if close
 
     # Identify heading sizes
     potential_heading_sizes = sorted(
@@ -242,13 +166,13 @@ def identify_headings(lines, pdf_path):
     heading_size_map = {}
     if potential_heading_sizes:
         heading_size_map["H1"] = potential_heading_sizes[0]
-    if len(potential_heading_sizes) >= 2 and potential_heading_sizes[1] < potential_heading_sizes[0] * 0.9:
+    if len(potential_heading_sizes) >= 2 and potential_heading_sizes[1] < potential_heading_sizes[0] * 0.95:
         heading_size_map["H2"] = potential_heading_sizes[1]
-    if len(potential_heading_sizes) >= 3 and potential_heading_sizes[2] < potential_heading_sizes[1] * 0.9:
+    if len(potential_heading_sizes) >= 3 and potential_heading_sizes[2] < potential_heading_sizes[0] * 0.95:
         heading_size_map["H3"] = potential_heading_sizes[2]
+    if len(potential_heading_sizes) >= 4 and potential_heading_sizes[3] < potential_heading_sizes[0] * 0.95:
+        heading_size_map["H4"] = potential_heading_sizes[3]
 
-    # Group multiline headings
-    lines = group_multiline_headings(lines, heading_size_map, body_text_size)
 
     # Title detection
     first_page_lines = sorted(
@@ -315,41 +239,39 @@ def identify_headings(lines, pdf_path):
         page = line["page"]
         if sum(c.isalnum() for c in text) < 2 or len(text) < 3:
             continue
-        if headings_per_page[page] > 8:
+        if headings_per_page[page] > 8:  # Limit headings per page
             continue
-        if line["block_density"] > 5:
+        if line["block_density"] > 5:  # Skip dense text blocks
             continue
 
         score = compute_heading_score(line, heading_size_map, body_text_size)
-        if score < 80:
+        if score < 80:  # Strict threshold
             continue
 
         avg_size = sum(span["size"] for span in line["spans"]) / len(line["spans"]) if line["spans"] else 0
-        numbering_depth = get_numbering_depth(text)
         level = None
-
-        if numbering_depth == 1 and (
+        if (
             "H1" in heading_size_map and
             avg_size >= heading_size_map["H1"] * 0.95 and
             score >= 100
         ):
             level = "H1"
-        elif numbering_depth == 2 or (
+        elif (
             "H2" in heading_size_map and
             avg_size >= heading_size_map["H2"] * 0.95 and
-            avg_size < (heading_size_map.get("H1", float('inf')) * 0.9) and
+            avg_size < (heading_size_map.get("H1", float('inf')) * 0.95) and
             score >= 90
         ):
             level = "H2"
-        elif numbering_depth >= 3 or (
+        elif (
             "H3" in heading_size_map and
             avg_size >= heading_size_map["H3"] * 0.95 and
-            avg_size < (heading_size_map.get("H2", float('inf')) * 0.9) and
+            avg_size < (heading_size_map.get("H2", float('inf')) * 0.95) and
             score >= 80
         ):
             level = "H3"
 
-        if level and text != title:
+        if level and text != title:  # Avoid duplicating title
             heading_identifier = (text.lower().strip(), page, level)
             if heading_identifier not in seen_headings:
                 outline.append({"level": level, "text": text, "page": page, "y0": line["bbox"][1]})
@@ -403,3 +325,4 @@ if __name__ == "__main__":
     print("Starting PDF processing...")
     process_pdfs()
     print("Completed PDF processing.")
+

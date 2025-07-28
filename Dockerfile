@@ -1,26 +1,30 @@
-# Use AMD64-compatible base image
-FROM --platform=linux/amd64 python:3.9-slim
+# Dockerfile
+# Use a lightweight base image for Python 3.10 on AMD64
+FROM --platform=linux/amd64 python:3.10-slim-bookworm
 
-# Set working directory
+# Set the working directory in the container
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies required by PyMuPDF (fitz)
 RUN apt-get update && apt-get install -y \
-    libmupdf-dev \
+    libharfbuzz-dev \
+    libfreetype6-dev \
+    libfontconfig1-dev \
+    libjpeg-dev \
+    zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install Python dependencies
+# Copy the requirements file into the container
 COPY requirements.txt .
+
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Download NLTK data
-RUN python -m nltk.downloader -d /app/nltk_data punkt stopwords
+# Copy the processing script
+COPY process_pdfs.py .
 
-# Copy source code
-COPY src/ src/
+# Create input and output directories
+RUN mkdir -p input output
 
-# Set NLTK data path
-ENV NLTK_DATA=/app/nltk_data
-
-# Run Round 1B script
-CMD ["python", "src/round_1b.py"]
+# Default command
+CMD ["python", "process_pdfs.py"]
